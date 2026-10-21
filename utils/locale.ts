@@ -78,6 +78,12 @@ export interface LocaleProfile {
     charactersPerMinute?: number;
     /** Preferred dialogue quote pairs, in detection priority order. */
     dialogueQuotes: ReadonlyArray<readonly [string, string]>;
+    /**
+     * Dialogue is also written as paragraphs opening with a dash, with the
+     * narrator's words set off by dashes after punctuation:
+     * `— Speech, — he said, — more speech.`
+     */
+    dashDialogue?: boolean;
     /** Regex matching sentence-terminator characters for this language. */
     sentenceTerminators: RegExp;
     /** Common stop words, used for prose-analysis & echo-finder filtering. */
@@ -322,7 +328,7 @@ const PROFILES: Record<string, LocaleProfile> = {
     de: { code: 'de', label: 'Deutsch', script: 'latin', wordsPerMinute: 220, dialogueQuotes: [['\u201e', '\u201c'], ['\u00bb', '\u00ab'], ['"', '"']], sentenceTerminators: LATIN_SENTENCE_RE, stopWords: STOP_DE, minSignificantLength: 3, supportsSyllables: false },
     it: { code: 'it', label: 'Italiano', script: 'latin', wordsPerMinute: 220, dialogueQuotes: [['\u00ab', '\u00bb'], ['\u201c', '\u201d'], ['"', '"']], sentenceTerminators: LATIN_SENTENCE_RE, stopWords: STOP_IT, minSignificantLength: 3, supportsSyllables: false },
     pt: { code: 'pt', label: 'Português', script: 'latin', wordsPerMinute: 220, dialogueQuotes: [['\u201c', '\u201d'], ['"', '"'], ['\u00ab', '\u00bb']], sentenceTerminators: LATIN_SENTENCE_RE, stopWords: STOP_PT, minSignificantLength: 3, supportsSyllables: false },
-    ru: { code: 'ru', label: 'Русский', script: 'cyrillic', wordsPerMinute: 180, dialogueQuotes: [['\u00ab', '\u00bb'], ['\u201e', '\u201c'], ['"', '"']], sentenceTerminators: LATIN_SENTENCE_RE, stopWords: STOP_RU, minSignificantLength: 3, supportsSyllables: false },
+    ru: { code: 'ru', label: 'Русский', script: 'cyrillic', wordsPerMinute: 180, dialogueQuotes: [['\u00ab', '\u00bb'], ['\u201e', '\u201c'], ['"', '"']], dashDialogue: true, sentenceTerminators: LATIN_SENTENCE_RE, stopWords: STOP_RU, minSignificantLength: 3, supportsSyllables: false },
     nl: { code: 'nl', label: 'Nederlands', script: 'latin', wordsPerMinute: 220, dialogueQuotes: [['\u201c', '\u201d'], ['"', '"'], ['\u201a', '\u2018']], sentenceTerminators: LATIN_SENTENCE_RE, stopWords: STOP_NL, minSignificantLength: 3, supportsSyllables: false },
     pl: { code: 'pl', label: 'Polski', script: 'latin', wordsPerMinute: 200, dialogueQuotes: [['\u201e', '\u201d'], ['\u00ab', '\u00bb'], ['"', '"']], sentenceTerminators: LATIN_SENTENCE_RE, stopWords: STOP_PL, minSignificantLength: 3, supportsSyllables: false },
     no: { code: 'no', label: 'Norsk', script: 'latin', wordsPerMinute: 220, dialogueQuotes: [['\u00ab', '\u00bb'], ['\u201c', '\u201d'], ['"', '"']], sentenceTerminators: LATIN_SENTENCE_RE, stopWords: STOP_NO, minSignificantLength: 3, supportsSyllables: false },
@@ -498,7 +504,15 @@ export function isCjkWrapToken(text: string): boolean {
 
 // ── Dialogue ────────────────────────────────────────────
 
-/** Sum character counts of all balanced dialogue quote pairs in `text`. */
+/** Em or en dash opening a dialogue paragraph (a hyphen would be a list item). */
+const DIALOGUE_DASH_LEAD_RE = /^\s*[\u2014\u2013]\s+/;
+/** Dash after punctuation switches between speech and the narrator's words. */
+const DIALOGUE_DASH_SWITCH_RE = /([,.!?\u2026])\s+[\u2014\u2013]\s+/g;
+
+/**
+ * Sum character counts of all balanced dialogue quote pairs in `text`, plus
+ * dash-led dialogue paragraphs for locales with `dashDialogue`.
+ */
 export function countDialogueCharacters(
     text: string,
     locale: StoryLineLocale = DEFAULT_STORYLINE_LOCALE,
@@ -507,6 +521,22 @@ export function countDialogueCharacters(
     const isWordChar = (char: string | undefined): boolean =>
         char !== undefined && /[\p{L}\p{N}]/u.test(char);
     let total = 0;
+    if (getLocaleProfile(locale).dashDialogue) {
+        const narrative: string[] = [];
+        for (const line of text.split('\n')) {
+            const lead = line.match(DIALOGUE_DASH_LEAD_RE);
+            if (!lead) {
+                narrative.push(line);
+                continue;
+            }
+            // Even segments are speech, odd ones the narrator's words.
+            const segments = line.slice(lead[0].length)
+                .replace(DIALOGUE_DASH_SWITCH_RE, '$1\u0000')
+                .split('\u0000');
+            for (let k = 0; k < segments.length; k += 2) total += segments[k].length;
+        }
+        text = narrative.join('\n');
+    }
     const pairs: ReadonlyArray<readonly [string, string]> = selectedPair
         ? [selectedPair]
         : getDialogueQuotePairs(locale);
